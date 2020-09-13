@@ -1,0 +1,429 @@
+---
+title: "Measurement of Policy Outcomes: Homework 1"
+author: "Martin Montane  \n<martinmontane@gmail.com>"
+date: "14/9/2020"
+output:
+  prettydoc::html_pretty:
+    theme: cayman
+    highlight: github
+---
+
+```{r preliminary_stuff, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+# We load the packages. If they are not installed, we install them
+libraries <- c("haven","data.table","magrittr","ggplot2","ggthemes","knitr","kableExtra","ivpack")
+not_installed <- libraries[!libraries %in% rownames(installed.packages())]
+if(length(not_installed)>0) invisible(lapply(not_installed,install.packages))
+invisible(lapply(libraries,require,character.only=TRUE))
+rm(list=ls())
+getOptimumValues <- function(rho, c1, c2, budget) {
+  m_opt <- floor( sqrt( ( (1 - rho) / rho ) * ( c1 / c2 ) ) )
+  n_opt <- floor( budget / ( c1 + c2 * m_opt) )
+  data.table(m_opt,n_opt,rho,c1,c2,budget)
+}
+
+
+
+# We load the .dta file
+score <- read_dta("Score_US.dta") %>% as.data.table()
+
+# We drop Fall 2011 data
+score <- score[,!colnames(score) %in% c("X3MSCALK1","X3SSCALK1","X3RSCALK1"),with=FALSE]
+
+```
+
+# Design effect
+
+1. Provide a short comment of this formula: $$deff = 1 + (m - 1) * \rho$$
+
+The formula of the **design effect** estimates what is the variance "inflation" in the estimation of a parameter in a two-stage sampling design relative to a random sampling design. When **m = 1**, then **deff** equals 1, which means that there is no variance inflation if we only take - at random - one observation from each of the selected PSUs. This makes sense, since this is a special case of the two-stage sampling design that is the equivalent of a random sampling strategy (in which every individual happens to be from a different school). As soon as **m** increases, then the variance increases, since more individuals from the same schools (PSUs) happen to be correlated which each other, bringing less information to the estimate than a random sampling would have brought.
+
+Another way to put it is that if each PSU has an specific and individual effect, sampling some of them at random would make the mean estimator to deviate more from the average of all the individuals, sometimes it would overestimate the value and sometimes underestimate it. This add up to the variability in random sampling strategy, making the estimator less accurate. I send attached a **sim_deff.R** in which I simulate and bootstrap the variance of the mean estimator under different sampling scenarios.
+
+2. What do you find as an integer value for **m**:
+
+$$ m^* = \sqrt{\frac{1-\rho}{p}\times\frac{c_1}{c_2}} = \sqrt{\frac{1-0.22}{0.22}\times41} \approx 12$$
+
+$$ m^* \approx 12 $$
+
+3. Does **m** increase or decrease in $\frac{c_1}{c_2}$ ? Why ?:
+
+The optimal number of intracluster observations ($m^*$) increases in $\frac{c_1}{c_2}$, the relative cost of adding a new PSU and surveying an additional individual in each of the PSUs. To understand why this is the case, the fraction can increase because $c_1$ increases or because $c_2$ decreases. If $c_1$ increases, then it will be costlier to go to an additional school, so it would be better to survey more people and less schools will be visited. If $c_2$ decreases, then it would be cheaper to interview more students in each school (PSUs), although this also increases **n**, the number of PSUs. We can check the optimal number of PSUs formula $$ n^* = \frac{c}{c_1+c_2\times m^*}$$
+
+If $c_2$ falls, the number of $m^*$ will increase, but the absolute value of the decrease in $c_2$ will be greater than the absolute value of the increase in $m^*$. This will reduce the share of the costs spent in surveying individuals and increase the share that is related to visiting schools. Given that $c_1$ did not change, then $n^*$ has to increase. 
+
+The following table shows a simple example in which doubling $c_1$ increases $m^*$ and decreases $n^*$, but halving $c_2$ increases both $m^*$ and $n^*$
+
+```{r third_ex_first_part, echo=FALSE}
+getOptimumValues(rho = 0.22, c1 = 41, c2 = 1, budget = 1000) %>%
+    rbind(getOptimumValues(rho = 0.22, c1 = 82, c2 = 1, budget = 1000)) %>% 
+    rbind(getOptimumValues(rho = 0.22, c1 = 41, c2 = 0.5, budget = 1000)) %>% 
+  kable(align = rep("c",6),col.names = c("$m^*$","$n^*$","$\\rho$","$c_1$","$c_2$","budget"),
+        caption = "Table 1. Optimum two-stages sampling parameters under different scenarios")
+
+```
+
+4. Does $m^*$ increase or decrease in $\rho$ ? Why ?:
+
+As $\rho$ increases $\frac{1-\rho}{p}$ decreases, so $m^*$ decreases. $\rho$ expresses how correlated observations are within a PSU. The higher the correlation, the least the "new information" we are able to gather from an aditional observation of the same PSU. This is why it becomes less cost-effective to survey a high number of individuals from the PSUs, and $m^*$ is reduced and more PSUs are surveyed instead. Below I show a numeric example
+
+```{r four_ex_first_part, message=FALSE, echo=FALSE}
+getOptimumValues(rho = 0.2, c1 = 41, c2 = 1, budget = 1000) %>%
+    rbind(getOptimumValues(rho = 0.5, c1 = 41, c2 = 1, budget = 1000)) %>% 
+    rbind(getOptimumValues(rho = 0.8, c1 = 41, c2 = 1, budget = 1000)) %>% 
+  kable(align = rep("c",6),col.names = c("$m^*$","$n^*$","$\\rho$","$c_1$","$c_2$","budget"),
+        caption = "Table 2. Optimum two-stages sampling parameters under different scenarios")
+```
+
+# Missing values
+
+1. How many missing values do the variables have ?
+
+Figure 1 shows the number and percentage of NA values for each of the variables in the dataset. As we can see, several variables from the Spring 2012 survey have a relatively high number of NAs.
+
+<center>
+```{r first_ex_second_part, echo=FALSE}
+# We drop Fall 2011 data
+subset_data <- score[,!colnames(score) %in% c("X3MSCALK1","X3SSCALK1","X3RSCALK1"),with=FALSE]
+
+# We check NAs by variable
+na_data <- lapply(1:ncol(subset_data),function(x){
+  data.table(na_count=sum(is.na(subset_data[[x]])),
+             na_share=sum(is.na(subset_data[[x]]))/length(subset_data[[x]]),
+             var=colnames(subset_data)[x])
+}) %>% rbindlist()
+
+# Aux variable to dinamycally plot ordered values in ggplot
+level_order <- na_data[order(na_count)]$var
+
+ggplot(na_data,aes(x=na_share, y=factor(var,levels = level_order))) +
+  geom_col() +
+  geom_text(aes(label=paste(round(na_share*100,1),"% (",na_count,")",sep=""), x= na_share+0.12)) +
+  scale_x_continuous(labels = scales::percent_format(1),limits = c(0,1)) +
+  theme_minimal() + 
+  theme(title=element_text(size=10)) +
+  labs(title="Percentage and number of missing values in all the variables of the dataset",x="",y="")
+```
+<br>**Figure 1**. Percentage and number of missing values in all the variables of the dataset
+</center>
+<br>
+2. Compute the average score in Reading and Mathematics in the sample at the end of the academic year
+2011 (which is Spring 2012)
+
+<center>
+```{r second_ex_second_part_1, echo = FALSE}
+mean_scores <- score[,lapply(.SD, mean, na.rm=TRUE), .SDcols = c("X4RSCALK1","X4MSCALK1")] %>% 
+  setnames(old = c("X4RSCALK1","X4MSCALK1"),new = c("reading_mean","maths_mean"))
+mean_scores %>% kable(table.attr = "style='width:40%;'",digits = 2,align = c("c","c"),
+                      col.names = c("Reading mean score","Math mean score"),
+                      caption = "Table 3. Mean score of the reading and math scores at Spring 2012")
+```
+</center>
+
+(a) Is the presence of missing values for the variables X4RSCALK1 and X4MSCALK1 independent of the
+child's sex, her scores at the beginning of the kindergarten year, the level of education of her
+parents?
+
+We see that there is a slightly less percentage of girls in the observations with missing data (48.5%) relative to that of the complete observations (48.9%). There is also a rather small difference in the level of education of the first adult is also a little different (58.8% report having a high school diploma or higher education in the missing data sample, while 59.5% do in the complete observation data sample). We do see an important discrepancy in the education level of the second parent: 38.2% reported having a high school diploma relative to the 43.3% in the complete observation sample.
+
+```{r second_ex_second_part_2, echo=FALSE}
+score[,na_condition:=ifelse(is.na(X4RSCALK1),TRUE,FALSE)]
+datos_subset <- score[,c("na_condition","X_CHSEX_R","XPARHIGHED_1","XPARHIGHED_2","X1RSCALK1","X1MSCALK1")]
+kable(datos_subset[,
+             list(share_girls = round(sum(X_CHSEX_R %in% 0)/length(!is.na(X_CHSEX_R))*100,1),
+                  share_highed_1 = round(sum(XPARHIGHED_1 %in% 1)/length(!is.na(XPARHIGHED_1))*100,1),
+                  share_highed_2 = round(sum(XPARHIGHED_2 %in% 1)/length(!is.na(XPARHIGHED_2))*100,1),
+                  mean_X1RSCALK1= round(mean(X1RSCALK1),2),
+                  mean_X1MSCALK1= round(mean(X1MSCALK1),2)),
+             by=list(na_condition)][,na_condition:=ifelse(na_condition==TRUE,"Missing value","Complete observation")],
+      col.names = c("Condition","Share female (%)","Share parent 1 high ed (%)","Share parent 2 high ed (%)","Mean reading scores (kindergarten)","Mean math scores (kindergarten)"),align=rep('c', 6),caption = "Table 4. Summary of variables values depending on missing data status ",digits = 2) %>% 
+  column_spec(1) %>% 
+  column_spec(2:6)  %>%
+  kable_styling(position = "center")
+```
+
+With respect to the scores at the beginning of the kindergarten year, the following graph shows that both in reading and math, the distribution of scores is shifted to the left size in the missing data sample.
+
+<center>
+```{r second_ex_second_part_3, message=FALSE, echo=FALSE}
+data_ggplot <- melt(score[,c("na_condition","X1RSCALK1","X1MSCALK1")],id.vars = "na_condition")
+
+ggplot(data_ggplot) +
+  geom_density(aes(fill=na_condition, x=value),alpha=0.5) +
+  facet_wrap(~ variable,labeller = labeller(
+    variable = c("X1RSCALK1"="Reading",
+                 "X1MSCALK1"="Math")
+  )) +
+  labs(x="",y="") +
+  theme_minimal() +
+  theme(axis.text.y = element_blank()) + 
+  scale_fill_wsj(name = "", labels = c("Complete cases","Missing data"))
+```
+<br>**Figure 2.** Density plot of Reading and Math scores for the complete cases and missing data observations
+</center>
+
+To statistically test whether there is a relationship between missing data, gender, previous scores and parents' educational level we follow two strategies. First, we estimate a logistic regression on the dummy variable of missing data. The idea here is to test whether some of the variables changes the probability of that observation being missing. We cluster the standard error at the school level and show the value of the point estimate of the coefficient and the p.value of the hypothesis testing. We can see that **the higher the educational level of the second parent and the higher the scores in the last year the smaller probability of having a missing observation**
+
+<center>
+```{r second_ex_second_part_4, echo=FALSE, message=FALSE}
+datos_subset <- score[,c("na_condition","X_CHSEX_R","XPARHIGHED_1","XPARHIGHED_2","X1RSCALK1","X1MSCALK1","S4_ID")]
+
+vars <- c("X_CHSEX_R","XPARHIGHED_1","XPARHIGHED_2","X1RSCALK1","X1MSCALK1")
+
+log_reg_approach <- lapply(vars,function(x){
+   model <- glm(data=datos_subset,
+   formula = na_condition ~ eval(parse(text=x)) ,family = "binomial")
+clst_output <- ivpack::clx(model,cluster = datos_subset$S4_ID)
+data.table(clst_output[2,c(1,4)] %>% t()) 
+}) %>% rbindlist() %>% .[,Variable:=vars] 
+
+log_reg_approach %>% kable(digits = 3,align = rep("c",5),
+                           caption = "<b> Table 5</b>: Point estimate and p.value five logistic regressions of the probability of having a missing observation against each of the variables listed in the 'Variable' column.")
+```
+</center>
+
+On the other hand, we estimate a linear regression between the variables as dependent variables and the missing observation condition as an independent variable to check whether there is correlation. We obtained exactly the same outcome as in the first approach: the education level of the second parent and the math and reading notes in kindergarten are dependent on the missing observation status.
+
+```{r linear_independence_test, echo=FALSE, message=FALSE}
+datos_subset <- score[,c("na_condition","X_CHSEX_R","XPARHIGHED_1","XPARHIGHED_2","X1RSCALK1","X1MSCALK1","S4_ID")]
+
+vars <- c("X_CHSEX_R","XPARHIGHED_1","XPARHIGHED_2","X1RSCALK1","X1MSCALK1")
+
+log_reg_approach <- lapply(vars,function(x){
+   model <- lm(data=datos_subset,
+   formula = eval(parse(text=x)) ~ na_condition)
+clst_output <- ivpack::clx(model,cluster = datos_subset$S4_ID)
+data.table(clst_output[2,c(1,2,4)] %>% t()) 
+}) %>% rbindlist() %>% .[,Variable:=vars] 
+
+log_reg_approach %>% kable(digits = 3,align = rep("c",4),
+                           caption = "<b> Table 6</b>: Point estimate and p.value five linear regressions of the probability of having a missing observation against each of the variables listed in the 'Variable' column. ")
+```
+
+
+
+(b) Given the structure of the missing values, are the sample averages of scores at the end of the year
+in Reading and Mathematics biased? Justify your responses in 2 to 3 sentences. (1 pt)
+
+Given the structure of the missing values the sample averages of scores would be **upward biased** both in Reading and Mathematics. This is due to the fact that complete observations show higher scores in previous tests and a higher educational level of the parents, on average. Nevertheless, it is important to stress that this is an assumption. Suppose that all missing data were from students from relatively less educated families located in an specific State. Further assume that the government put forward a program that is really effective at improving the learning experience on those that are treated, and they could not do the test because they could not move to the testing facilities. In this specific scenario, the sample averages would be **downward biased**
+
+3. Propose at least one way to take the missing values into account when estimating the average level
+of the 1st graders in Reading and Mathematics at the end of the year? If possible, implement your
+strategy and comment what you see.
+
+There are several ways of imputing specific values to missing data. One could estimate a regression on observed variables that are related to the variable that is wanted to be imputed and use its predictions to impute the missing values. When I implement this strategy using the level of education of the parents and the scores obtained in kindergarten, the mean score of reading in Spring 2012 is 69.86 instead of 70.02 and the math scores also decreases from 63.4 to 63.14.
+
+```{r third_ex_third_part, echo=FALSE, message=FALSE, warning=FALSE}
+reg_reading <- lm(score[!is.na(X4RSCALK1)],formula = X4RSCALK1 ~ XPARHIGHED_1 + XPARHIGHED_2 + X1RSCALK1)
+reg_math <- lm(score[!is.na(X4MSCALK1)],formula = X4MSCALK1 ~ XPARHIGHED_1 + XPARHIGHED_2 + X1MSCALK1)
+predictions <- data.table(reg_reading=predict(reg_reading,newdata=score),
+                          reg_math=predict(reg_math,newdata=score))
+score[,X4RSCALK1_IMP:=predictions$reg_reading]
+score[,X4MSCALK1_IMP:=predictions$reg_math]
+
+score[,":=" (X4RSCALK1_IMP=ifelse(!is.na(X4RSCALK1),X4RSCALK1,X4RSCALK1_IMP),
+             X4MSCALK1_IMP=ifelse(!is.na(X4MSCALK1),X4MSCALK1,X4MSCALK1_IMP))]
+
+kable(score[,lapply(.SD, mean, na.rm=TRUE),
+      .SDcols = c("X4RSCALK1","X4MSCALK1","X4RSCALK1_IMP","X4MSCALK1_IMP")],
+      col.names = c("Mean reading score","Mean math score","Mean reading score (imputed)","Mean math score (imputed)"),align=rep('c', 4),digits = 2, caption= "<b> Table 7</b>: sample mean of Mathematics/Reading in Spring 2012 with and without imputation .") %>%
+  kable_styling(position = "center")
+```
+
+4. Assume the missing values were random. Compare the average scores at the end of the academic year
+in Reading and Mathematics of children whose parent 1 has a higher level of education to their peers.
+Are the scores statistically different depending on the level of education of parent 1? and parent 2?
+Comment your results.
+
+The distribution of Reading and Mathematics scores look rather different depending on the educational level of both Parent 1 and Parent 2.
+<center>
+```{r, echo=FALSE, message=FALSE,warning=FALSE}
+ex4_data <- melt(score[!is.na(X4RSCALK1),c("X4RSCALK1","X4MSCALK1","XPARHIGHED_1","XPARHIGHED_2")],
+                 id.vars=c("XPARHIGHED_1","XPARHIGHED_2")) %>% 
+  melt(id.vars=c("variable","value"),variable.name = "variable_2", value.name = "value_2") %>% setnames(c("subject_variable","subject_value","parent_variable","parent_ed_value"))
+ggplot(ex4_data) +
+  geom_density(aes(fill=factor(parent_ed_value), x=subject_value),alpha=0.5) +
+  facet_grid(parent_variable ~ subject_variable,
+             labeller = labeller(
+    subject_variable = c("X4RSCALK1"="Reading","X4MSCALK1"="Math"),
+    parent_variable = c("XPARHIGHED_1"="First parent","XPARHIGHED_2"="Second parent")
+  )) +
+  theme_minimal() +
+  theme(axis.text.y = element_blank(),legend.position="bottom") + 
+  scale_fill_wsj(name = "", labels = c("Parent without high school diploma",
+                                       "Parent with high school diploma")) +
+  labs(x="",y="")
+```
+<br>**Figure 3.** Density plot of scores in Reading and Mathematics by educational level of Parent 1 and Parent 2 </center>
+
+```{r, echo=FALSE}
+ex4_data <- melt(score[!is.na(X4RSCALK1),
+                  c("X4RSCALK1","X4MSCALK1","XPARHIGHED_1","XPARHIGHED_2")],id.vars=c("X4RSCALK1","X4MSCALK1"))
+
+kable(x = ex4_data[,lapply(.SD,function(x) round(mean(x),2)),list(variable,value)],
+col.names = c("Variable","Condition","Mean reading score","Mean math score"),align=rep('c', 4), caption= "<b> Table 8</b>: Mean reading score and mathematics score by the education of first and second parent.") %>%
+  kable_styling(position = "center")
+```
+
+
+Are these differences statistically significant? To answer this question we estimate four linear regressions. In each of them we regress the scores (reading / maths) against the educational level of the first or the second parent. The coefficient in which we are interested is the one that captures the average difference between the scores of children with parents with high education and those of the children with parents without high education.
+
+The table shown below reveals that in all four regressions the difference in the average scores in math and reading between students with parents with high education and those with less educated parents is positive and statistically significant. On average, children with educated parents obtain 8 points more in the scores relative to those children with less educated parents.
+
+```{r, echo=FALSE}
+ex4_data <- score[!is.na(X4RSCALK1),c("X4RSCALK1","X4MSCALK1","XPARHIGHED_1","XPARHIGHED_2","S4_ID")]
+
+models <- c("X4RSCALK1 ~ XPARHIGHED_1",
+            "X4MSCALK1 ~ XPARHIGHED_1",
+            "X4RSCALK1 ~ XPARHIGHED_2",
+            "X4MSCALK1 ~ XPARHIGHED_2")
+
+reg_summaries <- lapply(models,function(x){
+model <- lm(data=ex4_data,
+            formula = as.formula(x))
+broom::tidy(model) %>% as.data.table() %>% .[2,]
+}) %>% rbindlist() %>% .[,model:=c("Reading vs Parent 1 HighEd",
+                                   "Math vs Parent 1 HighEd",
+                                   "Reading vs Parent 2 HighEd",
+                                   "Math vs Parent 2 HighEd")]
+kable(reg_summaries[,c(6,2:3,5)],
+      col.names=c("Model","Parent 1/2 higher ed coefficient","Std. Error", "P.value"),
+      digits = 2,align = rep("c",4), caption= "<b> Table 9</b>: Coefficient of four regressions of reading/math scores versus the educational level of parent 1 and 2. Standard errors and (rounded) p value of hypothesis test")
+
+```
+
+5. Supposing that the probability for a school to be sampled is exactly proportional to its size, and
+assuming that the number of students sampled by school is fixed, can you show that the probability
+to be sampled is the same for all students?
+
+The probability of sampling a random individual i from the cluster it belongs to, j, by the two-stage sampling is:
+
+$$ Pr(ind_i) = Pr(ind_i | cluster_j) \times Pr(cluster_j)$$
+
+The probability of picking individual i from its cluster is just the number of individuals that will be picked from each of the PSUs ($m$) and the total population of the PSU ($psu_{size}$). In the other hand, the probability of picking $cluster_j$ is directly proportional to its weight relative to the total population, as stated in the exercise, times the number of clusters that will be selected ($n$)
+
+
+$$ Pr(ind_i) = \frac{m}{psu_{size}} \times \frac{psu_{size}}{pop} \times n$$
+
+We can simplify the equation and get:
+
+$$ Pr(ind_i) = \frac{m \times n}{pop}$$
+
+Which means that the probability of sampling a specific individual is just the number of people that will be sampled relative to the population.
+
+**[ Questions 6 and 7 are answered together ]**
+
+6. Compute the average score in Reading skills and Mathematics in the sample at the end of the academic
+year 2011 while adjusting the standard errors for clustering at the school level.
+7. Compare your estimates with and without clustering. Why are the standard errors systematically
+higher when you account for clustering? How could this be a problem (in this or other settings)? Why
+would one still opt for a sampling design that leads to clustering?
+
+The table below shows the mean scores for reading and maths at Spring 2012, the end of academic year 2011. The standard error of the estimation almost duplicates when we account for the two-stage sampling design. This is a problem because our mean estimates are less accurate, and we might not detect differences between groups, specially if they are small. The standard errors are systematically higher because we sample over some units, that have a specific effect, so individuals are to some degree correlated, making the inference over the whole population less accurate.
+
+We could still choose this sampling design because of the costs of visiting all the clusters: under a fixed budget this strategy could be more effective than random sampling only a smaller number of individuals overall. In fact, it might unfeasible to do a random sampling strategy if the fixed costs of only visiting all the clusters is higher than the budget.
+
+<center>
+```{r, echo=FALSE}
+reg_math <- lm(data = score[!is.na(X4MSCALK1)],
+               formula = X4MSCALK1 ~ 1)
+reg_coef <- broom::tidy(reg_math) %>% as.data.table() 
+reg_coef_robust <- ivpack::clx(reg_math, cluster=score$S4_ID[!is.na(score$X4MSCALK1)])
+reg_output <- cbind(reg_coef[,c(1:3)],reg_coef_robust[1,2]) %>% 
+              setnames(new = c("Variable","Mean","std error","std error (cluster)"))
+
+reg_read <- lm(data = score[!is.na(X4RSCALK1)],
+               formula = X4RSCALK1 ~ 1)
+reg_coef <- broom::tidy(reg_read) %>% as.data.table() 
+reg_coef_robust <- ivpack::clx(reg_read, cluster=score$S4_ID[!is.na(score$X4RSCALK1)])
+
+reg_output_read <- cbind(reg_coef[,c(1:3)],reg_coef_robust[1,2]) %>% 
+              setnames(new = c("Variable","Mean","std error","std error (cluster)"))
+reg_output <- reg_output %>% rbind(reg_output_read)
+reg_output$Variable <- c("Math scores","Reading scores")
+kable(x = reg_output, digits = 2,align = rep("c",4),table.attr = "style='width:50%;'", caption= "<b> Table 10</b>: Estimated mean and its standard error, with and without clustering of standard errors.") 
+```
+</center>
+
+8. Compare the average scores at the end of the academic year in Reading skills and Mathematics of
+children whose parent 1 has a higher education level to their peers, while accounting for clustering.
+Are the scores statistically different depending on the education level of the student's parent 1? Same
+question with parent 2. Compare your conclusion to the results found in 4 and comment.
+
+To answer this question we estimate four linear regressions. In each of them we regress the scores (reading / maths) against the educational level of the first or the second parent. The coefficient in which we are interested is the one that captures the average difference between the scores of children with parents with high education and those of the children with parents without high education, which is represented by the intercept coefficient in each of the regressions.
+
+The table shown below depicts that in all four regressions the difference in the average scores in math and reading between students with parents with high education and those with less educated parents is statistically significant. The standard errors are clustered at the school level.
+
+We do not find any remarkable difference with respect to the exercise 4. Although the standard errors are higher (0.22 to 0.28), the differences are big enough to be soundly rejected in the hypothesis tests.
+
+
+```{r, echo=FALSE}
+ex8_data <- score[!is.na(X4RSCALK1),c("X4RSCALK1","X4MSCALK1","XPARHIGHED_1","XPARHIGHED_2","S4_ID")]
+
+models <- c("X4RSCALK1 ~ XPARHIGHED_1",
+            "X4MSCALK1 ~ XPARHIGHED_1",
+            "X4RSCALK1 ~ XPARHIGHED_2",
+            "X4MSCALK1 ~ XPARHIGHED_2")
+
+reg_summaries <- lapply(models,function(x){
+   model <- lm(data=ex4_data,
+   formula = as.formula(x))
+clst_output <- ivpack::clx(model,cluster = ex4_data$S4_ID)
+data.table(clst_output[2,c(1,2,4)] %>% t()) 
+}) %>% rbindlist() %>% .[,model:=c("Reading vs Parent 1 HighEd",
+                                   "Math vs Parent 1 HighEd",
+                                   "Reading vs Parent 2 HighEd",
+                                   "Math vs Parent 2 HighEd")]
+kable(reg_summaries[,c(4,1:3)],
+      col.names=c("Model","Parent 1/2 higher ed coefficient","Std. Error", "P.value"),
+      digits = 2,align = rep("c",4), caption= "<b> Table 11</b>: Coefficient of four regressions of reading/math scores versus the educational level of parent 1 and 2. Standard errors and p value of hypothesis test. Clustered standard errors")
+
+```
+
+9. Regress the final scores in Reading and Mathematics on the characteristics of the students and their
+parents' without controlling for the initial scores measured at the beginning of the kindergarten year.
+What do you observe?
+
+When we regress the math scores in the Fall 2012 on the educational level of both parents, student age, sex, height and the public/private condition of the school, we find that all variables have a positive and statistical significant association with the scores, at conventional levels. Students with parents with high school education (first or second), students that are relatively older, males, taller and enrolled in private schools are all associated with higher scores in math. This main result hold qualitatively even if we try perform some robustness check (dropping variables or adding other variables, with the exception of the lagged scores)
+
+```{r reg_math, echo=FALSE}
+ex10_data <- score[!is.na(X4MSCALK1) & !X4PUBPRI %in% -1,c("X1MSCALK1","X4MSCALK1","XPARHIGHED_1","XPARHIGHED_2","X4HEIGHT","X4AGE","X_CHSEX_R","X4LANGST","X4PUBPRI","S4_ID")]
+
+reg <- lm(formula = X4MSCALK1 ~ XPARHIGHED_1 + XPARHIGHED_2 + X4AGE + X_CHSEX_R + X4PUBPRI + X4HEIGHT,
+   data = ex10_data)
+kable(ivpack::clx(reg,cluster = ex10_data$S4_ID[!is.na(ex10_data$X4MSCALK1)])[],digits = 3, caption= "<b> Table 12</b>: Output of the regression of the math scores against educational level of the parents, age, gender and height of the students and the public/private nature of the institution . Standard errors clustered at the school level.")
+```
+
+The model for the reading scores yields very similar parameters, with the exception of sex: on average, girls obtained higher scores in reading, compared to men, after controlling for the rest of the independent variables.
+
+```{r reg_reading, echo=FALSE}
+ex9_data <- score[!is.na(X4RSCALK1) & !X4PUBPRI %in% -1,c("X4RSCALK1","X4MSCALK1","XPARHIGHED_1","XPARHIGHED_2","X4HEIGHT","X4AGE","X_CHSEX_R","X4LANGST","X4PUBPRI","S4_ID","X1MSCALK1","X1RSCALK1")]
+
+reg <- lm(formula = X4RSCALK1 ~ XPARHIGHED_1 + XPARHIGHED_2 + X4AGE + X_CHSEX_R + X4PUBPRI + X4HEIGHT,
+   data = ex9_data)
+kable(ivpack::clx(reg,cluster = ex9_data$S4_ID[!is.na(ex9_data$X4MSCALK1)])[],digits = 3, caption= "<b> Table 13</b>: Output of the regression of the reading scores against educational level of the parents, age, gender and height of the students and the public/private nature of the institution. Standard errors clustered at the school level.")
+```
+
+10. Regress the final scores in Reading and Mathematics on the characteristics of the students and their
+parents' while controlling for the scores measured at the beginning of the kindergarten year. What do
+you observe ? Why is it important to control for the initial scores?
+
+After controlling the scores measured at the beginning of the kindergarten year our regression becomes much more precise: the R-square goes up from 17% to 57%, but also all the measures based on information criteria get better. Besides this overall effect, all coefficients experience some changes.
+
+First of all, in the math scores regression the public / private condition of the school stops is no longer statistically significant at conventional levels. Second, The lagged scores in math have a coefficient as high as 0.86. Third, age coefficient is reversed: now it is slightly negative (and this does not change even if we remove the height coefficient, which is positive and statistically significant in the regression and is positively correlated with students' age)
+
+```{r reg_math_lagged, echo=FALSE}
+reg <- lm(formula = X4MSCALK1 ~ XPARHIGHED_1 + XPARHIGHED_2 + X4AGE + X_CHSEX_R + X4PUBPRI + X4HEIGHT + X1MSCALK1,
+   data = ex10_data)
+kable(ivpack::clx(reg,cluster = ex10_data$S4_ID[!is.na(ex10_data$X4MSCALK1)])[],digits = 3, caption= "<b> Table 14</b>: Output of the regressions of the math scores against educational level of the parents, age, gender and height of the students, the public/private nature of the institution and kindergarten scores in mathematics. Standard errors clustered at the school level.")
+```
+
+When we add the lagged reading variable in the reading scores regression the effect is largely the same as in the math model, with the difference that now age is no longer statistically significant (Table 15)
+
+```{r reg_reading_lagged, echo=FALSE}
+reg <- lm(formula = X4RSCALK1 ~ XPARHIGHED_1 + XPARHIGHED_2 + X4AGE + X_CHSEX_R + X4PUBPRI + X4HEIGHT + X1RSCALK1,
+   data = ex9_data)
+kable(ivpack::clx(reg,cluster = ex9_data$S4_ID[!is.na(ex9_data$X4RSCALK1)])[],digits = 3, caption= "<b> Table 15</b>: Output of the regressions of the reading scores against educational level of the parents, age, gender and height of the students, the public/private nature of the institution and kindergarten scores in reading. Standard errors clustered at the school level.")
+```
+
+Controlling for the lagged scores is important due to different reasons. First, if there is a fixed effect by individual, controlling for lagged scores could partly give us some clue about its value (for example, someone that is well motivated at home might always have better scores, and that is a variable we are not measuring). Second, if there is indeed some kind of feedback in the process of learning (that is to say, having good/bad scores reflects having learned/not having learned and being able to learn more in the future, or the scores themselves work as an incentive to make an effort in the next try), lagged scores could help predicting new scores.
